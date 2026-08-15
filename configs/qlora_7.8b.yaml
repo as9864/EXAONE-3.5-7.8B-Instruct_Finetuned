@@ -1,0 +1,84 @@
+# EXAONE-3.5-7.8B-Instruct 문서 요약 QLoRA (4-bit)
+# 대상: 단일 GPU 16GB (RTX 4080/5070 Ti/4090 등)
+#
+# VRAM 개요 (max_seq_len=1536, batch=4, group_by_length, grad ckpt on):
+#   4bit 가중치 ~4.5GB + LoRA/optimizer ~0.8GB + 활성값 ~1.5GB + logits ~5GB(최장 버킷)
+#
+# gradient_checkpointing을 끄면 활성값만 ~16GB가 되어 VRAM이 넘치고, Windows 드라이버가
+# 시스템 RAM으로 스필해서(sysmem fallback) 속도가 10배 이상 느려진다. 반드시 켜 둔다.
+
+model:
+  model_name_or_path: LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct
+  trust_remote_code: true
+  attn_implementation: sdpa
+  torch_dtype: bfloat16
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+  gradient_checkpointing: true
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: none
+  # null이면 모델의 nn.Linear 이름을 스캔해 자동 설정한다.
+  # EXAONE-3.5를 명시하려면 아래를 사용:
+  #   [q_proj, k_proj, v_proj, out_proj, c_fc_0, c_fc_1, c_proj]
+  target_modules: null
+  modules_to_save: null
+
+data:
+  train_file: data/processed/train.jsonl
+  eval_file: data/processed/validation.jsonl
+  document_key: document
+  summary_key: summary
+  # 실측(train 3000샘플): doc+summary 평균 630, p95 1266, p97 1442, p99 1912 토큰.
+  # 1536이면 97.3%가 무손실이고 3072 대비 최장 스텝 비용이 절반이다.
+  max_seq_len: 1536
+  max_target_tokens: 256      # summary p99 = 180 토큰
+  max_train_samples: null
+  max_eval_samples: 100
+  num_proc: 1
+
+train:
+  output_dir: outputs/exaone-3.5-7.8b-summary-qlora
+  seed: 42
+  # 20,425샘플 / 유효배치 16 -> 1에폭 ≈ 1,277 스텝. 요약 스타일 학습은 1에폭으로 충분하고
+  # 3에폭은 r=16 LoRA에서 과적합 쪽으로 기운다. eval_loss를 보고 늘린다.
+  num_train_epochs: 1.0
+  max_steps: -1
+  # 4bit 모델은 batch=1에서 dequant 오버헤드가 지배해 GPU가 놀았다. 4로 올리고
+  # accumulation을 4로 낮춰 유효 배치 16을 유지한다. OOM이 나면 2/8로 되돌린다.
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4       # 유효 배치 16
+  group_by_length: true                # 길이 100~1536 편차가 커서 패딩 낭비가 크다
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  max_grad_norm: 1.0
+  # LoRA optimizer state는 수백 MB뿐이라 paging 이득이 없고 오버헤드만 남는다.
+  optim: adamw_torch_fused
+  bf16: true
+  fp16: false
+  logging_steps: 10
+  eval_strategy: steps
+  eval_steps: 200
+  save_strategy: steps
+  save_steps: 200
+  save_total_limit: 3
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  report_to: []
+  resume_from_checkpoint: null
+
+generation:
+  max_new_tokens: 512
+  do_sample: false        # 요약은 greedy가 사실성에 유리
+  temperature: 0.7
+  top_p: 0.95
+  repetition_penalty: 1.05

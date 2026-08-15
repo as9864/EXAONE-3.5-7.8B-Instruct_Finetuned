@@ -1,0 +1,47 @@
+# EXAONE-3.5-7.8B-Instruct 문서 요약 bf16 LoRA (양자화 없음)
+# 대상: VRAM 40GB+ (A100 40G/80G, H100). 16GB GPU에서는 OOM 납니다.
+# 4bit 오차가 없어 품질이 약간 더 좋고 학습 속도도 빠릅니다.
+
+model:
+  model_name_or_path: LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct
+  trust_remote_code: true
+  attn_implementation: sdpa      # Linux + flash-attn 설치 시 flash_attention_2
+  torch_dtype: bfloat16
+  load_in_4bit: false
+  gradient_checkpointing: true
+
+lora:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  bias: none
+  target_modules: null
+  modules_to_save: null
+
+data:
+  train_file: data/processed/train.jsonl
+  eval_file: data/processed/validation.jsonl
+  max_seq_len: 4096
+  max_target_tokens: 512
+  max_eval_samples: 200
+  num_proc: 1
+
+train:
+  output_dir: outputs/exaone-3.5-7.8b-summary-lora-bf16
+  num_train_epochs: 3.0
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  optim: adamw_torch          # 비양자화 경로에서는 paged optimizer 불필요
+  bf16: true
+  logging_steps: 10
+  eval_strategy: steps
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 3
+
+generation:
+  max_new_tokens: 512
+  do_sample: false

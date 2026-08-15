@@ -1,0 +1,25 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# 산출물
+outputs/
+runs/
+logs/
+merged/
+wandb/
+
+# 데이터 (샘플만 커밋)
+data/raw/*
+data/processed/*
+!data/**/.gitkeep
+!data/sample/
+
+# 모델 캐시
+*.safetensors
+*.bin
+*.gguf
+.cache/

@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(nvidia-smi *)",
+      "PowerShell($env:PYTHONPATH=\"src\"; python -m pytest tests/test_config.py tests/test_data.py -q 2>&1 | Select-Object -Last 40)",
+      "PowerShell(python -m pip install rouge-score 2>&1 | Select-Object -Last 6)",
+      "PowerShell($env:PYTHONPATH=\"src\"; python -m pytest tests -q 2>&1 | Select-Object -Last 45)",
+      "PowerShell($env:PYTHONPATH=\"src\"; python scripts\\\\prepare_data.py --from-sample 2>&1 | Select-Object -Last 20)",
+      "PowerShell($env:PYTHONPATH=\"src\"; python -m exaone_summarize.train --help 2>&1 | Select-Object -Last 6)",
+      "PowerShell($env:PYTHONPATH=\"src\"; python -m pytest tests -q 2>&1 | Select-Object -Last 40)",
+      "PowerShell(.\\\\scripts\\\\run_pipeline.ps1 -Config configs\\\\smoke.yaml -Sample -SkipTrain -SkipEval)",
+      "Bash(nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv)",
+      "Bash(nvidia-smi --query-compute-apps=pid,used_memory --format=csv)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(TOKENIZERS_PARALLELISM=false .venv/Scripts/python.exe -m exaone_summarize.train -c configs/qlora_7.8b.yaml --set train.max_steps=20 --set data.max_train_samples=600 --set train.eval_strategy=no --set train.save_strategy=no --set train.logging_steps=5 --set train.output_dir=outputs/_bench)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)"
+    ]
+  }
+}
