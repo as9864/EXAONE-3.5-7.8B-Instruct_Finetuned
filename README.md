@@ -24,8 +24,8 @@ LoRA / QLoRA로 파인튜닝해 **한국어 문서 요약**에 특화시키는 �
 | loss 범위 | **응답 구간만** — 프롬프트 토큰은 `-100`으로 마스킹 (completion-only) |
 | 프롬프트 | EXAONE 공식 chat template (`apply_chat_template`) 사용 |
 | `target_modules` | 모델의 `nn.Linear`를 스캔해 **자동 감지** |
-| 평가 | ROUGE-1/2/L, 한국어용 분절기 3종 (`word` / `char` / `morph`) |
-| 테스트 | 46개 — 모델 가중치 없이 마스킹·예산·설정 검증 |
+| 평가 | ROUGE-1/2/L, 한국어용 분절기 3종 (`word` / `char` / `morph`) + lead-N 베이스라인 · 출처별 분해 |
+| 테스트 | 72개 — 모델 가중치 없이 마스킹·예산·설정·중복판정 검증 |
 
 ### 이 모델에서 특별히 처리한 것
 
@@ -71,6 +71,9 @@ python -m exaone_summarize.train -c configs\smoke.yaml
 
 ```powershell
 .\scripts\run_pipeline.ps1
+
+# AI Hub 「문서요약 텍스트」(신문기사 · 사설 · 법률)를 HF 뉴스 데이터와 혼합
+.\scripts\run_pipeline.ps1 -WithAihub
 ```
 
 상세는 [docs/USAGE.md](docs/USAGE.md)를 보세요.
@@ -83,18 +86,20 @@ python -m exaone_summarize.train -c configs\smoke.yaml
 ├── configs/                  qlora_7.8b · lora_bf16_7.8b · smoke
 ├── data/sample/              번들 샘플 8건/3건 (오프라인 검증용)
 ├── docs/                     USAGE · ARCHITECTURE · WORKLOG
-├── scripts/                  setup.ps1 · check_env.py · prepare_data.py · run_pipeline.ps1
+├── scripts/                  setup.ps1 · check_env.py · prepare_data.py · prepare_aihub.py
+│                             merge_datasets.py · check_leakage.py · run_pipeline.ps1
 ├── src/exaone_summarize/
 │   ├── config.py             설정 스키마 · --set 오버라이드 · 정합성 검증
 │   ├── prompt.py             chat template 구성 · 문서 토큰 절단
 │   ├── jsonl.py              JSONL 입출력 (torch 비의존)
+│   ├── dedup.py              완전/근사 중복 판정 (누수 차단)
 │   ├── data.py               completion-only 마스킹 · 동적 패딩 콜레이터
 │   ├── modeling.py           4bit 양자화 · target_modules 자동 감지 · LoRA 부착
 │   ├── train.py              학습 진입점
 │   ├── infer.py              요약 생성
 │   ├── evaluate.py           ROUGE 평가
 │   └── merge_lora.py         어댑터 병합
-└── tests/                    46개 (모델 다운로드 불필요)
+└── tests/                    72개 (모델 다운로드 불필요)
 ```
 
 ```powershell
@@ -105,10 +110,12 @@ $env:PYTHONPATH="src"; python -m pytest tests -q
 
 ## 알아둘 점
 
-**학습은 아직 실행되지 않았습니다.** 마스킹·예산·설정 로직은 단위 테스트로
-검증했지만, 실제 모델 로딩과 학습 수렴은 `peft`/`bitsandbytes` 설치 후
-`configs\smoke.yaml`로 확인해야 합니다. 미검증 항목 목록은
-[docs/WORKLOG.md §7](docs/WORKLOG.md#7-하지-않은-것)에 정리했습니다.
+**ROUGE 절대값을 믿지 마세요.** 한국어 요약 데이터는 정답 요약이 본문 복붙에
+가까운 경우가 많아(실측 84.8%), 본문 앞 세 문장을 복사만 해도 char ROUGE-1이
+63점 나옵니다. `evaluate.py`가 **lead-N 베이스라인**을 함께 출력하니 그 차이를
+보세요. 점수가 의심스러우면 `scripts/check_leakage.py`로 누수부터 확인하세요 —
+실제로 통합 전 평가 세트의 37.6%가 학습 세트와 겹쳐 있었습니다.
+자세한 내용은 [docs/WORKLOG.md §11](docs/WORKLOG.md#11-평가-점수-검증과-누수-제거-2026-08-16).
 
 **라이선스.** EXAONE-3.5 가중치는 `EXAONE AI Model License Agreement 1.1 - NC`로
 **비상업적 연구 목적**에 제한되며, 이 제약은 학습한 LoRA 어댑터와 병합 모델 같은

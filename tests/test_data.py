@@ -94,7 +94,8 @@ def test_build_dataset_from_sample_files(tokenizer, sample_dir):
     dataset = build_dataset(sample_dir / "train.jsonl", tokenizer, cfg, desc="test")
 
     assert len(dataset) == 8
-    assert set(dataset.column_names) == {"input_ids", "labels", "attention_mask"}
+    # length는 group_by_length용 컬럼이다 (data.py:SummarizationEncoder).
+    assert set(dataset.column_names) == {"input_ids", "labels", "attention_mask", "length"}
     for row in dataset:
         assert len(row["input_ids"]) == len(row["labels"])
         assert len(row["input_ids"]) <= cfg.max_seq_len

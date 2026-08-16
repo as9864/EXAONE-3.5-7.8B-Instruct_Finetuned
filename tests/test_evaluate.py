@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from exaone_summarize.evaluate import CharTokenizer, WordTokenizer, compute_rouge
+from exaone_summarize.evaluate import (
+    CharTokenizer,
+    WordTokenizer,
+    compute_rouge,
+    lead_sentences,
+)
 from exaone_summarize.jsonl import read_jsonl, write_jsonl
 
 
@@ -74,3 +79,32 @@ def test_sample_data_is_wellformed(sample_dir):
             assert set(row) == {"document", "summary"}
             assert len(row["summary"]) < len(row["document"])
             assert len(row["document"]) >= 100  # prepare_data 기본 필터 통과
+
+
+# --------------------------------------------------------- lead-N 베이스라인
+
+
+def test_lead_sentences_takes_first_n():
+    document = "첫 문장이다. 둘째 문장이다! 셋째 문장인가? 넷째 문장이다."
+    assert lead_sentences(document, 2) == "첫 문장이다. 둘째 문장이다!"
+    assert lead_sentences(document, 10) == document
+    assert lead_sentences(document, 0) == ""
+
+
+def test_lead_sentences_handles_text_without_terminator():
+    assert lead_sentences("종결 부호가 없는 한 덩어리", 3) == "종결 부호가 없는 한 덩어리"
+
+
+def test_lead_baseline_beats_model_when_reference_is_copied():
+    """정답 요약이 본문 앞부분 복붙이면 lead-3만으로도 높은 점수가 나온다.
+
+    이 관계가 성립하기 때문에 ROUGE 절대값만 보면 안 된다.
+    """
+    document = "핵심 문장이다. 두 번째 문장이다. 세 번째 문장이다. 나머지는 곁가지다."
+    reference = "핵심 문장이다. 두 번째 문장이다. 세 번째 문장이다."
+
+    baseline = compute_rouge([lead_sentences(document, 3)], [reference], "char")
+    weak_model = compute_rouge(["전혀 다른 이야기를 적었다."], [reference], "char")
+
+    assert baseline["rouge1"] == pytest.approx(100.0)
+    assert weak_model["rouge1"] < baseline["rouge1"]

@@ -13,11 +13,17 @@ EXAONE-3.5-7.8B-Instruct 문서 요약 LoRA 파인튜닝 프로젝트의 상세 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 입력                                                                     │
 │   HuggingFace 데이터셋  │  로컬 jsonl/json/csv  │  data/sample (번들)     │
+│   AI Hub 문서요약 zip (data/AIHUB_DocSummaryData)                        │
 └────────────┬────────────────────┬────────────────────────┬───────────────┘
              └────────────────────┴────────────────────────┘
                                   │
                     ┌─────────────▼──────────────┐
                     │  scripts/prepare_data.py   │  정규화 · 필터 · 스플릿
+                    │  scripts/prepare_aihub.py  │  zip 스트리밍 파싱
+                    └─────────────┬──────────────┘
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │ scripts/merge_datasets.py  │  중복 제거 · 샘플링 · 누수 차단
                     └─────────────┬──────────────┘
                                   │
                     data/processed/{train,validation,test}.jsonl
@@ -57,7 +63,11 @@ EXAONE-3.5-7.8B-Instruct 문서 요약 LoRA 파인튜닝 프로젝트의 상세 
 ├── data/
 │   ├── sample/                  번들 샘플 8건/3건 (커밋됨, 오프라인 검증)
 │   ├── raw/                     원본 입력 (gitignore)
-│   └── processed/               prepare_data.py 출력 (gitignore)
+│   ├── AIHUB_DocSummaryData/    AI Hub 배포 zip 원본 (gitignore)
+│   └── processed/               학습에 쓰는 JSONL (gitignore)
+│       ├── {train,validation,test}.jsonl   최종 병합 결과
+│       ├── naver_news/          HF 데이터셋 변환본
+│       └── aihub/               AI Hub 도메인별 변환본
 │
 ├── docs/                        이 문서들
 │
@@ -65,6 +75,9 @@ EXAONE-3.5-7.8B-Instruct 문서 요약 LoRA 파인튜닝 프로젝트의 상세 
 │   ├── setup.ps1                venv + cu128 torch + 의존성 + 점검
 │   ├── check_env.py             CUDA / sm_120 / bitsandbytes 4bit 커널 실측
 │   ├── prepare_data.py          데이터 정규화 및 스플릿
+│   ├── prepare_aihub.py         AI Hub 문서요약 zip → 도메인별 JSONL
+│   ├── merge_datasets.py        여러 JSONL 병합 (중복 제거 · 샘플링 · 누수 차단)
+│   ├── check_leakage.py         학습/평가 세트 누수 검사
 │   └── run_pipeline.ps1         데이터 → 학습 → 평가 일괄
 │
 ├── src/exaone_summarize/        라이브러리 + CLI 모듈
@@ -78,11 +91,12 @@ EXAONE-3.5-7.8B-Instruct 문서 요약 LoRA 파인튜닝 프로젝트의 상세 
 | `config.py` | 245 | 설정 스키마·YAML 로딩·`--set` 오버라이드·정합성 검증 | `Config`, `load_config`, `apply_overrides`, `validate` |
 | `prompt.py` | 47 | chat template 메시지 구성, 문서 토큰 단위 절단 | `build_messages`, `render_prompt`, `truncate_document` |
 | `jsonl.py` | 33 | JSONL 입출력 (stdlib만 사용) | `read_jsonl`, `write_jsonl` |
+| `dedup.py` | 121 | 완전/근사 중복 판정 — shingle 역색인, 누수 차단 | `exact_key`, `shingles`, `ShingleIndex` |
 | `data.py` | 141 | completion-only 마스킹 인코딩, 동적 패딩 콜레이터 | `SummarizationEncoder`, `DataCollatorForCausalSummarization`, `build_dataset` |
 | `modeling.py` | 130 | 모델/토크나이저 로딩, 4bit 양자화, LoRA 부착 | `load_for_training`, `load_for_inference`, `find_linear_module_names` |
 | `train.py` | 120 | 학습 오케스트레이션, `TrainingArguments` 구성 | `main`, `build_training_args` |
 | `infer.py` | 108 | 배치 요약 생성 (left padding) | `summarize_batch` |
-| `evaluate.py` | 128 | ROUGE-1/2/L, 한국어 분절기 3종 | `compute_rouge`, `WordTokenizer`, `CharTokenizer`, `MorphTokenizer` |
+| `evaluate.py` | 190 | ROUGE-1/2/L, 한국어 분절기 3종, lead-N 베이스라인, 출처별 분해 | `compute_rouge`, `lead_sentences`, `WordTokenizer`, `CharTokenizer`, `MorphTokenizer` |
 | `merge_lora.py` | 50 | 어댑터를 bf16 베이스에 병합 | `main` |
 
 ---
@@ -93,7 +107,7 @@ EXAONE-3.5-7.8B-Instruct 문서 요약 LoRA 파인튜닝 프로젝트의 상세 
 
 ```
 계층 0 — stdlib만
-    jsonl.py
+    jsonl.py, dedup.py
 
 계층 1 — yaml + (transformers는 TYPE_CHECKING 전용)
     prompt.py ◀── config.py
@@ -122,7 +136,7 @@ from .modeling import load_for_inference
 ```
 
 덕분에 `peft`가 없는 환경에서도 `python -m exaone_summarize.evaluate --help`와
-순수 채점이 동작하고, 테스트 46개 중 37개가 GPU·모델 없이 돕니다.
+순수 채점이 동작하고, 테스트 72개 중 63개가 GPU·모델 없이 돕니다.
 
 ---
 
@@ -418,6 +432,7 @@ $env:PYTHONPATH="src"; python -m pytest tests -q
 | 다른 베이스 모델 | `model.model_name_or_path` — 모듈 이름은 자동 감지됨 |
 | 평가 지표 추가 | `evaluate.py:compute_rouge` 옆에 함수 추가 |
 | 새 데이터 소스 | `scripts/prepare_data.py`의 `_load_local` / `_load_hf` |
+| 데이터 혼합 비율 조정 | `scripts/merge_datasets.py --input 경로:건수` (재변환 불필요) |
 | 문서 앞이 아니라 뒤를 남기기 | `prompt.py:truncate_document`의 슬라이스 방향 |
 
 ---

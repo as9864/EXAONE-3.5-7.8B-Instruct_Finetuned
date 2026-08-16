@@ -96,10 +96,14 @@ python -m exaone_summarize.evaluate --predictions outputs\smoke\preds.jsonl --to
 |---|---|---|
 | `-Config` | `configs\qlora_7.8b.yaml` | 설정 파일 |
 | `-Sample` | off | HF 다운로드 없이 번들 샘플 사용 |
+| `-WithAihub` | off | AI Hub 문서요약 데이터를 HF 데이터와 혼합 ([4.1](#41-ai-hub-문서요약-텍스트-혼합)) |
+| `-PerSourceTrain` | 5000 | 혼합 시 출처별 학습 건수 (0 = 전체) |
+| `-PerSourceValid` / `-PerSourceTest` | 250 / 500 | 혼합 시 출처별 평가 건수 |
+| `-RebuildAihub` | off | `data\processed\aihub`가 있어도 zip에서 다시 변환 |
 | `-HfDataset` | `daekeun-ml/naver-news-summarization-ko` | HF 데이터셋 |
 | `-MaxTrain` | 0 (전체) | 학습 데이터 상한 |
 | `-EvalLimit` | 200 | 평가 샘플 수 |
-| `-RougeTokenizer` | `char` | ROUGE 분절기 |
+| `-RougeTokenizer` | `word` | ROUGE 분절기 |
 | `-SkipData` / `-SkipTrain` / `-SkipEval` | off | 단계 생략 |
 
 ---
@@ -143,6 +147,135 @@ python scripts\prepare_data.py --input-file data\raw\mydata.csv `
 
 > 번들 샘플은 8건/3건짜리 **파이프라인 검증용**입니다. 실제 품질을 얻으려면
 > 최소 수천 건 규모의 도메인 데이터가 필요합니다.
+
+### 4.1 AI Hub 「문서요약 텍스트」 혼합
+
+AI Hub에서 받은 zip을 **압축 해제 없이** 그대로 두면 됩니다.
+
+```
+data/AIHUB_DocSummaryData/
+├── Training/    법률_train_original.zip  사설_train_original.zip  신문기사_train_original.zip
+└── Validation/  법률_valid_original.zip  사설_valid_original.zip  신문기사_valid_original.zip
+```
+
+`scripts/prepare_aihub.py`가 도메인별 JSONL로 변환합니다.
+
+```powershell
+python scripts\prepare_aihub.py
+```
+
+| 처리 | 내용 |
+|---|---|
+| 본문 | `text[][].sentence`를 공백으로 이어붙임 (`--include-title`로 제목 추가 가능) |
+| 요약 | `abstractive`(사람이 쓴 생성 요약). `--summary-type extractive`면 `extractive` 인덱스 문장을 이어붙임 |
+| 스트리밍 | 신문기사 원본 JSON이 1.1GB라 `documents` 배열을 객체 단위로 파싱 (상수 메모리) |
+| 필터 | `prepare_data.py`와 동일 + 본문 중복 제거 |
+| 스플릿 | Validation zip에는 test가 없으므로 `--test-ratio 0.5`로 valid/test를 겹치지 않게 분할 |
+
+출력은 `data/processed/aihub/{news,editorial,law}_{train,valid,test}.jsonl`이고
+각 레코드에 `source`(`aihub_news` 등) · `category` · `id`가 함께 들어갑니다.
+
+변환 결과(필터 후):
+
+| 도메인 | train | valid | test |
+|---|---:|---:|---:|
+| 신문기사 (`news`) | 243,428 | 14,863 | 14,862 |
+| 사설 (`editorial`) | 53,279 | 3,162 | 3,162 |
+| 법률 (`law`) | 24,038 | 1,489 | 1,488 |
+
+### 4.2 데이터셋 병합
+
+`scripts/merge_datasets.py`가 여러 JSONL을 합칩니다. 입력은 `경로` 또는
+`경로:최대건수`이고, 상한을 주면 **셔플 후** 앞에서 N건을 취합니다.
+
+**순서가 중요합니다.** 평가 세트를 먼저 만들고, 학습 세트를 만들 때 그 본문을
+`--exclude`로 빼야 누수가 없습니다.
+
+```powershell
+# 기존 HF 데이터는 별도 디렉터리로 받아 둡니다 (덮어쓰기 방지)
+python scripts\prepare_data.py --hf-dataset daekeun-ml/naver-news-summarization-ko `
+    --output-dir data\processed\naver_news
+
+# (1) 검증 세트 — 출처별 250건
+python scripts\merge_datasets.py --output data\processed\validation.jsonl `
+    --input data\processed\naver_news\validation.jsonl:250 `
+    --input data\processed\aihub\news_valid.jsonl:250 `
+    --input data\processed\aihub\editorial_valid.jsonl:250 `
+    --input data\processed\aihub\law_valid.jsonl:250
+
+# (2) 테스트 세트 — 출처별 500건, 검증 세트와 겹치지 않게
+python scripts\merge_datasets.py --output data\processed\test.jsonl `
+    --input data\processed\naver_news\test.jsonl:500 `
+    --input data\processed\aihub\news_test.jsonl:500 `
+    --input data\processed\aihub\editorial_test.jsonl:500 `
+    --input data\processed\aihub\law_test.jsonl:500 `
+    --exclude data\processed\validation.jsonl
+
+# (3) 학습 세트 — 출처별 5,000건, 평가 본문 제외
+#     naver 쪽은 원본에 중복이 많아 상한을 넉넉히 줘야 5,000건이 남습니다.
+python scripts\merge_datasets.py --output data\processed\train.jsonl `
+    --input data\processed\naver_news\train.jsonl:6000 `
+    --input data\processed\aihub\news_train.jsonl:5020 `
+    --input data\processed\aihub\editorial_train.jsonl:5010 `
+    --input data\processed\aihub\law_train.jsonl:5120 `
+    --exclude data\processed\validation.jsonl `
+    --exclude data\processed\test.jsonl
+```
+
+- **중복 제거**: 완전 일치(정규화 후 SHA-1) + **근사 중복**(어절 5-gram 유사도
+  ≥ `--near-dup-threshold`, 기본 0.5). 재게재·통신사 재배포 기사를 잡습니다.
+  판정 로직은 `src/exaone_summarize/dedup.py`에 있습니다.
+- **`--exclude`**: 그 파일에 든 본문(및 그 재게재본)을 결과에서 뺍니다.
+- **백업**: 출력 파일이 이미 있으면 `.bak`으로 복사한 뒤 씁니다(`--no-backup`으로 끄기).
+- 그 외: `--max-total`, `--no-shuffle`, `--no-dedup`, `--seed`, `--document-key/--summary-key`.
+
+위 과정을 한 번에 돌리려면 (누수 검사까지 자동 수행):
+
+```powershell
+.\scripts\run_pipeline.ps1 -WithAihub                            # 출처별 5,000건 (약 2만건)
+.\scripts\run_pipeline.ps1 -WithAihub -PerSourceTrain 2000       # 가볍게
+.\scripts\run_pipeline.ps1 -WithAihub -PerSourceTrain 0          # 전체(32만건, 비현실적)
+```
+
+현재 구성(기본값 기준):
+
+| 스플릿 | 건수 | 출처 구성 |
+|---|---:|---|
+| train | 20,130 | naver 5,104 / aihub 신문기사 5,005 / 사설 5,007 / 법률 5,014 |
+| validation | 998 | 각 249~250 |
+| test | 1,977 | 각 483~499 |
+
+> **분량 감각.** 이 GPU(RTX 5070 Ti, QLoRA, `max_seq_len=1536`)의 실측 처리량은
+> **0.38 샘플/초**입니다. 2만건 1에폭 = 약 **15시간**. AI Hub train 전체(32만건)를
+> 쓰면 1에폭에 230시간이 걸리므로 현실적이지 않습니다. 데이터를 늘리고 싶다면
+> `-PerSourceTrain`을 올리기 전에 `max_seq_len`을 줄이거나 에폭 수를 낮추세요.
+
+### 4.3 누수 검사
+
+평가 점수가 이상하게 높으면 **먼저 이걸 돌리세요.**
+
+```powershell
+python scripts\check_leakage.py `
+    --train data\processed\train.jsonl `
+    --eval data\processed\validation.jsonl `
+    --eval data\processed\test.jsonl
+```
+
+`--predictions`를 함께 주면 누수된 샘플과 깨끗한 샘플의 ROUGE를 갈라서 보여 줍니다.
+점수 차이가 크면 그 평가 결과는 버려야 합니다.
+
+```powershell
+python scripts\check_leakage.py --train data\processed\train.jsonl `
+    --eval data\processed\test.jsonl `
+    --predictions outputs\exaone-3.5-7.8b-summary-qlora\predictions.jsonl
+```
+
+기존(AI Hub 통합 전) 데이터에서 실제로 나온 결과입니다.
+
+| | 완전 일치 | 근사 중복 | 합계 |
+|---|---:|---:|---:|
+| 통합 전 test (933건) | 73 | 278 | **351건 (37.6%)** |
+| 통합 후 test (1,977건) | 0 | 0 | **0건** |
 
 ---
 
@@ -252,27 +385,48 @@ python -m exaone_summarize.infer -c configs\qlora_7.8b.yaml `
 python -m exaone_summarize.evaluate -c configs\qlora_7.8b.yaml `
     --input-jsonl data\processed\test.jsonl `
     --adapter outputs\exaone-3.5-7.8b-summary-qlora\adapter `
-    --tokenizer char `
     --save-predictions outputs\preds.jsonl `
     --output-json outputs\metrics.json
 
 # 이미 만든 예측 파일만 채점 (torch·peft 불필요)
-python -m exaone_summarize.evaluate --predictions outputs\preds.jsonl --tokenizer char
+python -m exaone_summarize.evaluate --predictions outputs\preds.jsonl
 ```
 
-### 한국어 ROUGE 분절기 선택
+출력에는 세 가지가 함께 나옵니다.
 
-`rouge-score`의 기본 토크나이저는 영문 기준이라 한국어 점수가 왜곡됩니다.
-`--tokenizer`로 고르세요.
+1. 전체 ROUGE-1/2/L
+2. **lead-N 베이스라인** — 본문 앞 N문장을 그대로 복사한 "요약"의 점수
+   (`--lead-baseline 0`으로 끔)
+3. **출처별 분해** — 데이터에 `source` 필드가 있을 때
+
+### ROUGE 절대값을 믿지 마세요
+
+같은 예측 파일을 분절기만 바꿔 채점한 실측값입니다.
+
+| | R-1 | R-2 | R-L |
+|---|---:|---:|---:|
+| 학습한 모델 (char) | 67.69 | 56.12 | 54.25 |
+| lead-3 베이스라인 (char) | 63.32 | 51.57 | 49.41 |
+| 학습한 모델 (word) | 52.82 | 44.54 | 46.48 |
+| lead-3 베이스라인 (word) | 49.14 | 40.94 | 42.42 |
+
+- **char 분절만으로 15점이 붙습니다.** 음절 단위라 조사·어미가 우연히 겹치는
+  것까지 점수로 잡힙니다.
+- **naver 뉴스 데이터는 정답 요약의 84.8%가 본문 문자열 그대로입니다.**
+  그래서 본문 앞 세 문장을 복사만 해도 char R-1 63점이 나옵니다. 67.69라는
+  숫자의 실질은 "복사 베이스라인 대비 +4.4"입니다.
+- 그러니 **베이스라인 대비 차이**와 **출처별 점수**를 보세요. 절대값은
+  데이터셋이 바뀌면 그대로 무의미해집니다.
 
 | 값 | 특징 |
 |---|---|
-| `word` | 정규식 어절 단위. 의존성 없음. 조사가 다르면 불일치 처리돼 점수가 낮게 나옴 |
-| `char` | 음절 단위. 조사 변화에 관대해 **한국어에서 보통 가장 안정적** |
+| `word` | 정규식 어절 단위. 의존성 없음. **기본값** |
+| `char` | 음절 단위. 조사 변화에 관대하지만 점수가 크게 부풀려짐 |
 | `morph` | konlpy 형태소. 가장 정확하지만 `pip install konlpy` + JDK 필요 |
 
-> 절대 점수는 분절기에 따라 크게 달라집니다. **같은 분절기로 측정한 값끼리만
-> 비교하세요.** 점수는 방향 지표일 뿐이니 실제 요약문 몇 개는 직접 읽어보는 게 좋습니다.
+> **같은 분절기로 측정한 값끼리만 비교하세요.** 점수는 방향 지표일 뿐이니 실제
+> 요약문 몇 개는 직접 읽어보는 게 좋습니다. 점수가 의심스러우면
+> [4.3 누수 검사](#43-누수-검사)를 먼저 돌리세요.
 
 ---
 

@@ -13,7 +13,26 @@
       "Bash(nvidia-smi --query-compute-apps=pid,used_memory --format=csv)",
       "Bash(.venv/Scripts/python.exe -c ' *)",
       "Bash(TOKENIZERS_PARALLELISM=false .venv/Scripts/python.exe -m exaone_summarize.train -c configs/qlora_7.8b.yaml --set train.max_steps=20 --set data.max_train_samples=600 --set train.eval_strategy=no --set train.save_strategy=no --set train.logging_steps=5 --set train.output_dir=outputs/_bench)",
-      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)"
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(python *)",
+      "Bash(PYTHONIOENCODING=utf-8 python *)",
+      "Bash(wmic ComputerSystem get TotalPhysicalMemory)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe scripts/prepare_aihub.py --input-dir data/AIHUB_DocSummaryData/Validation --output-dir outputs/_aihub_smoke --progress 0)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(PYTHONIOENCODING=utf-8 cat outputs/prepare_aihub.log)",
+      "PowerShell($errors = $null; $null = [System.Management.Automation.PSParser]::Tokenize\\(\\(Get-Content -Raw scripts\\\\run_pipeline.ps1\\), [ref]$errors\\); if \\($errors.Count\\) { $errors | ForEach-Object { \"$\\($_.Message\\) @ line $\\($_.Token.StartLine\\)\" } } else { \"syntax OK\" })",
+      "Bash(PYTHONIOENCODING=utf-8 sed *)",
+      "Bash(PYTHONIOENCODING=utf-8 cat README.md)",
+      "Bash(PYTHONIOENCODING=utf-8 grep -n \"^## \\\\|^### \" docs/WORKLOG.md)",
+      "Bash(PYTHONIOENCODING=utf-8 tail -40 docs/WORKLOG.md)",
+      "Bash(PYTHONIOENCODING=utf-8 cat)",
+      "Bash(PYTHONIOENCODING=utf-8 grep -n \"prepare_data\\\\|scripts/\" docs/ARCHITECTURE.md)",
+      "Bash(.venv/Scripts/python.exe -c \"import datasets,transformers;print\\(datasets.__version__, transformers.__version__\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 find outputs -name \"*.json\" -maxdepth 3)",
+      "Bash(PYTHONIOENCODING=utf-8 cat metrics.json)",
+      "Bash(PYTHONIOENCODING=utf-8 grep -n \"def \\\\|tokenizer\" src/exaone_summarize/evaluate.py)",
+      "Bash(PYTHONIOENCODING=utf-8 grep *)"
     ]
   }
 }
