@@ -32,7 +32,15 @@
       "Bash(PYTHONIOENCODING=utf-8 find outputs -name \"*.json\" -maxdepth 3)",
       "Bash(PYTHONIOENCODING=utf-8 cat metrics.json)",
       "Bash(PYTHONIOENCODING=utf-8 grep -n \"def \\\\|tokenizer\" src/exaone_summarize/evaluate.py)",
-      "Bash(PYTHONIOENCODING=utf-8 grep *)"
+      "Bash(PYTHONIOENCODING=utf-8 grep *)",
+      "Bash(.venv/Scripts/python.exe -m pip install -q fastapi \"uvicorn[standard]\")",
+      "Bash(.venv/Scripts/python.exe -c \"import fastapi,uvicorn,pydantic,importlib.metadata as md;print\\('fastapi',md.version\\('fastapi'\\)\\);print\\('uvicorn',md.version\\('uvicorn'\\)\\);print\\('pydantic',md.version\\('pydantic'\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pip install -q pytest)",
+      "Read(//c/Users/H11/**)",
+      "Bash(PYTHONIOENCODING=utf-8 PYTHONPATH=\"C:/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/src\" /c/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/.venv/Scripts/python.exe /c/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/outputs/_smoke_api.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/.venv/Scripts/python.exe -)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }

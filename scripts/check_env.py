@@ -11,7 +11,7 @@ import sys
 
 CHECKS = [
     ("torch", None),
-    ("transformers", "4.48"),
+    ("transformers", "5.15"),
     ("peft", "0.14"),
     ("accelerate", "1.3"),
     ("datasets", "3.2"),
@@ -22,11 +22,11 @@ CHECKS = [
 
 # requirements.txt에서 '==' 로 정확히 고정한 패키지. EXAONE-3.5는
 # trust_remote_code 기반 커스텀 모델링 코드를 쓰기 때문에, transformers가
-# 이 버전보다 낮아도(임포트 실패/구식) 높아도(원격 코드가 최신 API 가정과
-# 어긋나 조용히 깨짐 - 예: apply_chat_template의 return_dict 기본값 변경,
-# get_input_embeddings 관련 경고) 문제가 된다. 최소 버전 체크만으로는
-# 이런 "너무 최신" 드리프트를 못 잡으므로 별도로 정확히 비교한다.
-EXACT_PINS = {"transformers": "4.48"}
+# 이 버전보다 낮아도 높아도(원격 코드가 최신 API 가정과 어긋나 조용히 깨짐)
+# 문제가 된다. 최소 버전 체크만으로는 이런 드리프트를 못 잡으므로 정확히 비교한다.
+#
+# 5.15.x = QLoRA 학습 1에폭 + 추론 + HTTP 서버까지 완주한 버전.
+EXACT_PINS = {"transformers": "5.15"}
 
 OK, WARN, FAIL = "[ OK ]", "[WARN]", "[FAIL]"
 

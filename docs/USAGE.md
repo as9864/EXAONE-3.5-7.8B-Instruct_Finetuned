@@ -42,10 +42,27 @@ pip install torch --index-url https://download.pytorch.org/whl/cu128
 
 ### 전용 venv를 쓰는 이유
 
-EXAONE-3.5는 `trust_remote_code` 기반 커스텀 모델링 코드를 쓰고, 그 코드는
-transformers 4.4x API를 전제로 작성돼 있습니다. 그래서 `requirements.txt`가
-`transformers==4.48.3`으로 고정돼 있습니다. transformers 5.x가 깔린 환경에 그대로
-섞으면 로딩 단계에서 깨지고, 반대로 전역을 다운그레이드하면 다른 작업이 깨집니다.
+EXAONE-3.5는 `trust_remote_code` 기반 커스텀 모델링 코드를 쓰기 때문에 transformers
+버전에 민감합니다. 그래서 `requirements.txt`가 **실제로 학습·추론을 완주한 버전으로
+정확히 고정**돼 있습니다. 전역 환경을 이 조합에 맞추면 다른 작업이 깨지므로 격리합니다.
+
+**검증된 조합** (이 저장소의 `.venv`에서 QLoRA 1에폭 학습 → 추론 → 평가 → 서버까지 확인)
+
+| 패키지 | 버전 |
+|---|---|
+| Python | 3.12.7 |
+| torch | 2.11.0+cu128 (CUDA 12.8) |
+| transformers | **5.15.0** |
+| peft | 0.20.0 |
+| accelerate | 1.14.0 |
+| datasets | 5.0.1 |
+| bitsandbytes | 0.50.1 |
+| tokenizers | 0.22.2 |
+
+로딩 중 `torch_dtype is deprecated` / `cache_position ... not documented` 경고가
+뜨지만 동작에는 영향이 없습니다. 전역에 흔한 **5.9.0에서는 remote code 로딩이
+실패**했습니다([WORKLOG D4](WORKLOG.md)). `python scripts\check_env.py`가 설치된
+버전이 고정값과 다르면 경고합니다.
 
 ### 수동 설치
 
@@ -399,9 +416,33 @@ python -m exaone_summarize.evaluate --predictions outputs\preds.jsonl
    (`--lead-baseline 0`으로 끔)
 3. **출처별 분해** — 데이터에 `source` 필드가 있을 때
 
+### 7.1 출처별 베이스라인과 신뢰구간
+
+`evaluate.py`는 lead-N 베이스라인을 **전체 평균으로만** 냅니다. 도메인이 섞인
+데이터에서는 서로 반대 방향인 결과가 상쇄돼 "베이스라인과 차이 없음"으로 보입니다.
+`report_predictions.py`가 출처별 lead-N과 부트스트랩 신뢰구간까지 채워 줍니다.
+
+```powershell
+python scripts\report_predictions.py `
+    --predictions outputs\exaone-3.5-7.8b-summary-qlora\predictions.jsonl `
+    --markdown --output-json outputs\report.json
+```
+
+| 출력 | 의미 |
+|---|---|
+| 출처별 `ΔR-1` + 95% CI | 문서 단위 paired bootstrap(기본 10,000회). **CI가 0을 포함하면 그 차이는 표본 오차와 구별되지 않습니다** |
+| 신규 4-gram 비율 | 요약에서 원문에 없는 4-gram의 비율. 예측이 정답보다 크게 낮으면 복사 쪽으로 치우친 것 |
+| 길이비 | 예측/정답 길이. 1을 크게 넘으면 ROUGE F1이 길이 때문에 깎입니다 |
+| 빈 출력 · 미완결 · 반복 | 생성 붕괴 점검 (빈 문자열, 문장 종결부호 없음, 같은 5-gram 재등장) |
+
+ROUGE는 `evaluate.py`와 같은 분절기를 쓰므로 값이 일치합니다. 실제 수치는
+[README 학습 결과](../README.md#학습-결과)에 있습니다.
+
 ### ROUGE 절대값을 믿지 마세요
 
-같은 예측 파일을 분절기만 바꿔 채점한 실측값입니다.
+아래는 **naver 뉴스 단독 세트로 학습했던 초기 실행**의 예측 파일을 분절기만 바꿔
+채점한 값입니다(현재 4종 혼합 실행과는 다른 실험입니다). 분절기가 점수를 얼마나
+움직이는지 보기 위한 예시입니다.
 
 | | R-1 | R-2 | R-L |
 |---|---:|---:|---:|
@@ -446,7 +487,118 @@ python -m exaone_summarize.merge_lora `
 
 ---
 
-## 9. 테스트
+## 9. 다른 프로젝트에서 사용하기
+
+`infer.py`의 CLI는 실행마다 7.8B 모델을 새로 올립니다(약 20초). 요약을 반복해서
+쓰려면 모델을 **프로세스에 상주**시켜야 합니다. 두 가지 방법이 있습니다.
+
+| | 방법 | 언제 쓰나 | 상대 프로젝트에 필요한 것 |
+|---|---|---|---|
+| **B** | `Summarizer` 임포트 | 같은 venv를 쓸 수 있을 때 | 이 저장소 + torch/transformers/peft |
+| **C** | HTTP 서버 | 그 외 전부 (**권장**) | 없음 (표준 라이브러리로 호출) |
+
+무거운 의존성(transformers·bitsandbytes)을 상대 프로젝트에 끌고 들어가면 버전
+충돌이 나기 쉽습니다. **기본은 C를 쓰고**, 같은 venv 안에서 돌릴 때만 B를 쓰세요.
+
+### 9.1 B — 파이썬에서 직접 (`Summarizer`)
+
+```powershell
+# 상대 프로젝트의 venv에서
+pip install -e C:\Users\H11\projects\EXAONE-3.5-7.8B-Instruct
+```
+
+```python
+from exaone_summarize.api import Summarizer
+
+# config/adapter 상대 경로는 저장소 루트 기준으로 해석하므로 CWD와 무관합니다.
+summarizer = Summarizer.load()
+
+print(summarizer.summarize("요약할 본문..."))
+print(summarizer.summarize_many([doc1, doc2], batch_size=4))
+
+# 요청별로 생성 옵션을 덮어쓸 수 있습니다 (서버 기본값은 그대로 유지)
+print(summarizer.summarize(doc, max_new_tokens=128))
+
+# 입력이 잘렸는지까지 확인하려면
+result = summarizer.summarize_detailed([doc])[0]
+print(result.summary, result.input_tokens, result.truncated)
+```
+
+| 항목 | 내용 |
+|---|---|
+| `Summarizer.load()` | `configs/qlora_7.8b.yaml` + 학습된 어댑터를 기본으로 로딩 |
+| `adapter=None` | 파인튜닝 전 베이스 모델 (개선 폭 비교용) |
+| `repo_root=` | 저장소를 복사 설치(non-editable)했을 때 경로 기준을 지정 |
+| `overrides=` | `["data.max_seq_len=3072"]` 같은 `--set` 형식 오버라이드 |
+| 스레드 안전성 | 생성 구간을 내부 락으로 직렬화. 여러 스레드에서 호출해도 안전하지만 **동시 실행은 되지 않음** |
+
+> **프로세스당 하나만 만드세요.** 4-bit 모델이 VRAM 약 5GB를 잡으므로, 두 개를
+> 올리면 16GB에서도 위험합니다.
+
+### 9.2 C — 로컬 HTTP 서버 (권장)
+
+```powershell
+pip install -e ".[serve]"        # fastapi + uvicorn
+python -m exaone_summarize.serve --port 8000
+```
+
+기동 로그에 `준비 완료 | model=... 본문예산=1024토큰`이 찍히면 사용 가능합니다.
+모델 로딩은 시작할 때 **한 번만** 일어납니다.
+
+| 엔드포인트 | 설명 |
+|---|---|
+| `GET /health` | 모델·어댑터·디바이스·본문 토큰 예산 |
+| `POST /summarize` | `{"document": "..."}` → `{"summary", "input_tokens", "truncated", ...}` |
+| `POST /summarize/batch` | `{"documents": [...], "batch_size": 4}` → `{"results": [...]}` |
+| `GET /docs` | Swagger UI (스키마 확인·수동 테스트) |
+
+```powershell
+python -m exaone_summarize.serve --host 127.0.0.1 --port 8000 `
+    --adapter outputs\exaone-3.5-7.8b-summary-qlora\adapter `
+    --set generation.max_new_tokens=256      # 서버 기본 생성 옵션 조정
+python -m exaone_summarize.serve --no-adapter    # 베이스 모델 서빙 (비교용)
+```
+
+상대 프로젝트에서는 `scripts/client_example.py`를 복사해서 쓰면 됩니다.
+표준 라이브러리만 사용하므로 설치할 것이 없습니다.
+
+```python
+from client_example import SummarizeClient
+
+client = SummarizeClient("http://127.0.0.1:8000")
+print(client.summarize("요약할 본문..."))
+print(client.summarize_many([doc1, doc2], batch_size=4))
+```
+
+```powershell
+python scripts\client_example.py --health
+python scripts\client_example.py --text "요약할 본문..."
+python scripts\client_example.py --jsonl docs.jsonl --batch-size 4
+```
+
+알아둘 점:
+
+- **인증이 없습니다.** 기본 바인딩은 `127.0.0.1`입니다. `--host 0.0.0.0`으로 열면
+  같은 네트워크의 누구나 호출할 수 있으니, 신뢰할 수 있는 망에서만 쓰세요.
+- **요청은 직렬 처리됩니다.** GPU가 하나이므로 동시 요청은 큐에 쌓입니다.
+  클라이언트 timeout을 넉넉히(수 분) 두세요. 처리량이 필요하면 `/summarize/batch`로
+  묶어 보내는 게 요청을 여러 번 보내는 것보다 빠릅니다.
+- **입력 길이 한계.** 본문 예산은 `max_seq_len - max_new_tokens`(기본
+  1536 − 512 = **1024토큰**, 한국어 약 2,000~2,500자)입니다. 넘으면 **뒷부분이
+  조용히 잘리고** 응답의 `truncated: true`로 알려줍니다. 긴 문서는 클라이언트에서
+  나눠 요약하거나 `--set data.max_seq_len=3072`로 올리세요(VRAM 여유 필요).
+- 요청 하나에 문서 32건, 문서당 20만 자가 상한입니다(`serve.py` 상수).
+- 오타난 옵션은 무시하지 않고 422로 거절합니다(`max_tokens` 같은 실수 방지).
+
+### 9.3 vLLM / TGI로 서빙
+
+처리량이 본격적으로 필요하면 §8에서 어댑터를 병합한 뒤 vLLM에 올리는 쪽이
+빠릅니다. 단 RTX 50xx(sm_120)는 cu128로 빌드된 vLLM이 필요하고, 병합에 시스템
+RAM 약 20GB를 씁니다. 단일 사용자 규모라면 9.2로 충분합니다.
+
+---
+
+## 10. 테스트
 
 스텁 토크나이저를 써서 모델 가중치 없이 마스킹·토큰 예산·설정 검증 로직을 확인합니다.
 
@@ -455,15 +607,17 @@ pip install pytest
 $env:PYTHONPATH="src"; python -m pytest tests -q
 ```
 
-46개 중 37개는 GPU와 모델 가중치 없이 동작합니다.
+120개 전부 GPU와 모델 가중치 없이 동작합니다. HTTP 서버 테스트는 fastapi가 없으면
+자동으로 skip됩니다.
 
 ---
 
-## 10. 트러블슈팅
+## 11. 트러블슈팅
 
 **`KeyError: 'exaone'` / remote code 로딩 실패**
-transformers 버전 문제입니다. `pip install transformers==4.48.3`으로 맞추고,
-`model.trust_remote_code: true`인지 확인하세요.
+transformers 버전 문제입니다. `pip install transformers==5.15.0`으로 맞추고,
+`model.trust_remote_code: true`인지 확인하세요. 버전을 바꿨다면 캐시된 remote code
+(`~/.cache/huggingface/modules/transformers_modules/`)를 지우고 다시 받아보세요.
 
 **`Target modules ... not found in the base model`**
 `lora.target_modules`를 Llama 기준으로 적었을 때 발생합니다. `null`로 두어
@@ -495,6 +649,23 @@ PyTorch가 GPU 아키텍처를 지원하지 않습니다. RTX 50xx는 cu128+ 휠
 학습 데이터의 `summary` 끝에 EOS가 붙는지 확인하세요(인코더가 자동으로 붙입니다).
 `generation.max_new_tokens`도 확인하세요.
 
+**`서버에 접속할 수 없습니다`(클라이언트)**
+서버가 떠 있는지, 포트가 같은지 확인하세요. 기본 바인딩이 `127.0.0.1`이라 다른
+PC에서는 접속되지 않습니다. 원격에서 쓰려면 `--host 0.0.0.0`이 필요합니다(§9.2의
+보안 주의 참고).
+
+**응답에 `truncated: true`가 붙음**
+본문이 토큰 예산(`max_seq_len - max_new_tokens`)을 넘어 **뒷부분이 잘렸습니다.**
+요약에 문서 후반 내용이 빠집니다. 문서를 나눠 보내거나
+`--set data.max_seq_len=3072`로 예산을 늘리세요(VRAM 사용량이 함께 늘어납니다).
+
+**HTTP 요청이 몇 분씩 걸림**
+GPU가 하나여서 요청이 직렬 처리됩니다. 여러 건이면 `/summarize/batch`로 묶고,
+클라이언트 timeout을 넉넉히 두세요. `max_new_tokens`를 줄이는 것도 직접적입니다.
+
+**`ImportError: HTTP 서버에는 fastapi가 필요합니다`**
+`pip install -e ".[serve]"` 또는 `pip install fastapi "uvicorn[standard]"`.
+
 **`.ps1` 실행 시 `The string is missing the terminator: "` 오류**
 Windows PowerShell 5.1은 BOM이 없는 `.ps1`을 시스템 ANSI 코드페이지로 읽기 때문에,
 한글 주석·메시지가 있으면 문자열이 깨져 파싱에 실패합니다. 이 저장소의 `.ps1`은
@@ -509,7 +680,7 @@ $text = [System.IO.File]::ReadAllText($p, (New-Object System.Text.UTF8Encoding $
 
 ---
 
-## 11. 라이선스
+## 12. 라이선스
 
 - **이 저장소의 코드**: 자유롭게 사용하세요.
 - **EXAONE-3.5 모델 가중치**: `EXAONE AI Model License Agreement 1.1 - NC`가 적용됩니다.

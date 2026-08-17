@@ -96,6 +96,8 @@ EXAONE-3.5-7.8B-Instruct 문서 요약 LoRA 파인튜닝 프로젝트의 상세 
 | `modeling.py` | 130 | 모델/토크나이저 로딩, 4bit 양자화, LoRA 부착 | `load_for_training`, `load_for_inference`, `find_linear_module_names` |
 | `train.py` | 120 | 학습 오케스트레이션, `TrainingArguments` 구성 | `main`, `build_training_args` |
 | `infer.py` | 108 | 배치 요약 생성 (left padding) | `summarize_batch` |
+| `api.py` | 266 | 모델 상주 재사용 API — 경로 해석, 요청별 생성 옵션, 절단 감지, 생성 직렬화 | `Summarizer`, `SummaryResult`, `merge_generation` |
+| `serve.py` | 262 | 로컬 HTTP 서버 (FastAPI) — 요청 스키마 검증, 오류→상태코드 매핑 | `create_app`, `SummarizeRequest`, `BatchRequest` |
 | `evaluate.py` | 190 | ROUGE-1/2/L, 한국어 분절기 3종, lead-N 베이스라인, 출처별 분해 | `compute_rouge`, `lead_sentences`, `WordTokenizer`, `CharTokenizer`, `MorphTokenizer` |
 | `merge_lora.py` | 50 | 어댑터를 bf16 베이스에 병합 | `main` |
 
@@ -124,6 +126,8 @@ EXAONE-3.5-7.8B-Instruct 문서 요약 LoRA 파인튜닝 프로젝트의 상세 
     infer.py      ◀── config, jsonl, modeling, prompt (계층 3 필요)
     merge_lora.py ◀── 독립                             (계층 3 필요)
     evaluate.py   ◀── config, jsonl  +  infer/modeling 은 *지연 임포트*
+    api.py        ◀── config          +  infer/modeling 은 *지연 임포트*
+    serve.py      ◀── api, config  + fastapi (선택 의존성)
 ```
 
 `evaluate.py`의 지연 임포트가 중요합니다. `--predictions`로 이미 만들어진 예측
@@ -136,7 +140,11 @@ from .modeling import load_for_inference
 ```
 
 덕분에 `peft`가 없는 환경에서도 `python -m exaone_summarize.evaluate --help`와
-순수 채점이 동작하고, 테스트 72개 중 63개가 GPU·모델 없이 돕니다.
+순수 채점이 동작하고, 테스트 120개가 전부 GPU·모델 없이 돕니다.
+
+`api.py`도 같은 규칙을 따릅니다. `Summarizer`를 임포트하는 것만으로는 torch가
+올라오지 않고, `Summarizer.load()`와 요약 실행 시점에만 `modeling`/`infer`를
+끌어옵니다. 그래서 `serve.py`의 라우팅·요청 검증을 모델 없이 테스트할 수 있습니다.
 
 ---
 
