@@ -391,7 +391,7 @@ python -m exaone_summarize.infer -c configs\qlora_7.8b.yaml `
 ```
 
 `--adapter`를 생략하면 파인튜닝 전 베이스 모델로 추론합니다. **개선 폭을 보려면
-베이스와 어댑터를 각각 돌려 ROUGE를 비교하세요.**
+베이스와 어댑터를 각각 돌려 ROUGE를 비교하세요** — 절차는 [§7.2](#72-베이스-모델과-비교하기-파인튜닝의-순효과)에 있습니다.
 
 ---
 
@@ -437,6 +437,46 @@ python scripts\report_predictions.py `
 
 ROUGE는 `evaluate.py`와 같은 분절기를 쓰므로 값이 일치합니다. 실제 수치는
 [README 학습 결과](../README.md#학습-결과)에 있습니다.
+
+### 7.2 베이스 모델과 비교하기 (파인튜닝의 순효과)
+
+lead-N은 **하한선**일 뿐입니다. 어댑터가 실제로 무엇을 더했는지는 같은 프롬프트·같은
+생성 설정으로 돌린 **파인튜닝 전 베이스 모델**과 비교해야 나옵니다. `--adapter`를
+빼면 그게 됩니다.
+
+```powershell
+# (1) 베이스 zero-shot — 어댑터와 완전히 같은 조건
+python -m exaone_summarize.evaluate -c configs\qlora_7.8b.yaml `
+    --input-jsonl data\processed\test.jsonl --limit 200 --batch-size 4 `
+    --save-predictions outputs\baseline-zeroshot\predictions.jsonl `
+    --output-json outputs\baseline-zeroshot\metrics.json
+
+# (2) 베이스 zero-shot — 길이·형식을 프롬프트로 지시 (더 강한 베이스라인)
+python -m exaone_summarize.evaluate -c configs\zeroshot_prompted.yaml `
+    --input-jsonl data\processed\test.jsonl --limit 200 --batch-size 4 `
+    --save-predictions outputs\baseline-zeroshot-prompted\predictions.jsonl
+
+# (3) 같은 문서끼리 짝지어 비교 (ΔR-1 + 95% CI + 길이·추상성·붕괴)
+python scripts\compare_runs.py `
+    --a outputs\baseline-zeroshot\predictions.jsonl --a-label base-0shot `
+    --b outputs\qlora-eval-fixed\predictions.jsonl --b-label qlora `
+    --markdown --output-json outputs\comparison.json
+```
+
+`compare_runs.py`는 본문 문자열로 짝을 맞추므로 두 파일의 **행 순서가 달라도** 됩니다.
+정답 요약이 다르면(= 데이터 버전이 다르면) 거부합니다. `--examples 5`를 주면 점수 차가
+가장 큰 5건을 양쪽 요약과 함께 출력합니다 — 숫자보다 이게 더 많은 것을 알려줍니다.
+
+**베이스라인을 두 개 내는 이유.** 어댑터는 학습 데이터에서 출력 형식(한 단락, 150자
+내외)까지 배웠습니다. 같은 프롬프트를 베이스 모델에 주면 형식을 몰라 목록·머리말을
+붙이고 정답보다 2배 이상 길게 씁니다. ROUGE F1은 길이 초과를 감점하므로 그 격차에는
+"형식을 모른다"가 섞입니다. `configs/zeroshot_prompted.yaml`은 프롬프트로 길이·형식만
+알려준 버전이라, 형식 요인을 뺀 격차를 볼 수 있습니다. 실측은
+[README 학습 결과](../README.md#4-평가-결과)에 있습니다(+20.38 → +19.20).
+
+> **평가 전에 `python scripts\patch_remote_code.py --check`를 돌리세요.** remote code가
+> attention mask를 만들지 못하는 상태면 배치 생성이 조용히 망가져서, 특히 베이스 모델
+> 점수가 무의미해집니다(아래 §11 트러블슈팅).
 
 ### ROUGE 절대값을 믿지 마세요
 
@@ -618,6 +658,23 @@ $env:PYTHONPATH="src"; python -m pytest tests -q
 transformers 버전 문제입니다. `pip install transformers==5.15.0`으로 맞추고,
 `model.trust_remote_code: true`인지 확인하세요. 버전을 바꿨다면 캐시된 remote code
 (`~/.cache/huggingface/modules/transformers_modules/`)를 지우고 다시 받아보세요.
+
+**요약이 반복 루프에 빠지거나 문서와 무관한 내용을 만든다 (배치일 때만)**
+캐시된 remote code(`modeling_exaone.py`)가 **attention mask 생성에 실패**한 상태입니다.
+mask가 `None`이면 SDPA는 순수 causal로 동작해서 **패딩 토큰까지 문맥으로 읽습니다.**
+생성은 left padding이라 배치 안의 짧은 문서일수록 pad가 많이 붙어 심하게 망가지고,
+pad가 없는 배치 최장 문서만 정상이라 눈에 잘 띄지 않습니다. 학습은 right padding이라
+영향이 작습니다.
+
+```powershell
+python scripts\patch_remote_code.py --check     # 상태 확인 (종료코드 1 = 패치 필요)
+python scripts\patch_remote_code.py             # 수정 (원본은 .orig로 백업)
+python scripts\patch_remote_code.py --restore   # 되돌리기
+```
+
+`scripts\check_env.py`도 같은 항목을 점검합니다. **모델 캐시를 지우고 다시 받으면 원래
+코드로 돌아오므로 다시 실행해야 합니다.** 배경과 실측 영향은
+[WORKLOG §12](WORKLOG.md)에 있습니다(베이스 모델 R-1 8.83 → 18.72).
 
 **`Target modules ... not found in the base model`**
 `lora.target_modules`를 Llama 기준으로 적었을 때 발생합니다. `null`로 두어

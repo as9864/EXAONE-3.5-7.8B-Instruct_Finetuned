@@ -503,3 +503,137 @@ naver 쪽은 원본 자체에 중복이 많아 5,000건을 남기려면 상한 6
   균등해서 이전보다 점수가 **낮게** 나올 것이고, 그게 정상이다.
 - ROUGE 자체의 한계(사실 오류를 못 잡음)는 그대로다. 요약문을 직접 읽는 절차를
   대체하지 못한다.
+
+---
+
+## 12. 베이스 zero-shot 베이스라인 측정과 attention mask 버그 (2026-08-18)
+
+**요청:** 파인튜닝한 모델이 아니라 EXAONE-3.5-7.8B-Instruct 베이스 모델로 평가해서
+결과를 비교할 것. (README §6 한계 2번으로 남겨 뒀던 ablation)
+
+**결론:** 어댑터는 베이스 zero-shot 대비 **+20.4 R-1**로 유의하게 낫다. 다만 이 값을
+얻는 과정에서 **평가 파이프라인이 조용히 망가져 있었다는 것**을 발견했다. 캐시된
+remote code가 attention mask를 버리고 있어서, left padding을 쓰는 배치 생성이
+붕괴하고 있었다. 베이스 모델의 첫 측정값 R-1 8.83은 이 버그의 산물이다.
+
+### 12.1 발견 경로
+
+베이스 모델(`--adapter` 없이) 200건을 평가하니 R-1 8.83이 나왔다. 출력 길이는 정답의
+5.2배(817자 vs 157자), 200건 중 113건에 5-gram 반복, 120건이 문장 중간에서 끊겼다.
+표본을 직접 읽으니 문서와 무관한 환각(문서에 없는 "2017 FOOD KOREA CONFERENCE")과
+같은 구절의 무한 반복이었다. EXAONE-3.5-Instruct가 이 정도로 못하는 것은 이상했다.
+
+가설을 순서대로 지웠다.
+
+| 가설 | 확인 방법 | 결과 |
+|---|---|---|
+| 문서 절단(1,024토큰 예산 초과) | 토큰 길이 측정 | 200건 중 7건만 절단, 반복은 그 7건에서 안 나왔다 |
+| left padding 설정 누락 | `modeling.load_for_inference` 확인 | `padding_side="left"` 정상 |
+| 4-bit 양자화 열화 | — | 아래에서 배제됨 |
+| **배치 생성** | 같은 12건을 `--batch-size 1`로 재실행 | **정상 요약이 나왔다** |
+
+bs=1은 정상, bs=4는 붕괴. 그리고 bs=4에서도 **배치 내 최장 문서(=pad 0개)만** 정상
+이었다. 패딩 처리 문제로 좁혀졌다.
+
+### 12.2 원인
+
+`~/.cache/huggingface/modules/.../modeling_exaone.py`의 mask 생성부가 손으로
+수정돼 있었다.
+
+```python
+# 원본 (hub 스냅샷) — transformers 5.15에 없는 인자명을 쓴다
+causal_mask = create_causal_mask(
+    config=self.config, input_embeds=inputs_embeds,      # 5.15는 inputs_embeds
+    attention_mask=attention_mask, cache_position=cache_position,   # 5.15에는 없는 인자
+    past_key_values=past_key_values, position_ids=position_ids)
+
+# 수정돼 있던 코드 — TypeError를 try/except로 덮고 mask를 버린다
+try:
+    from transformers.masking_utils import _prepare_4d_causal_attention_mask
+    causal_mask = _prepare_4d_causal_attention_mask(
+        attention_mask, (batch_size, seq_length), inputs_embeds, ...)  # 둘 다 미정의 → NameError
+except Exception:
+    causal_mask = None
+```
+
+`batch_size` / `seq_length`가 그 함수 스코프에 없으므로 `NameError`가 **매 forward마다**
+발생하고, 그때마다 `causal_mask = None`이 된다. SDPA는 mask가 `None`이면 `is_causal=True`로
+동작하므로 **패딩 토큰을 실제 토큰처럼 attend한다.**
+
+왜 학습에서는 안 드러났나: 학습은 right padding이라 pad가 뒤에 있고, causal 어텐션에서
+각 실토큰의 앞쪽은 전부 실토큰이다. 그래서 loss가 거의 오염되지 않는다. 반대로 **생성은
+left padding**이라 짧은 문서일수록 앞에 pad가 잔뜩 붙고, 모델은 그 pad를 문맥으로 읽는다.
+
+### 12.3 수정
+
+`scripts/patch_remote_code.py` — 5.15 시그니처에 맞춘 호출로 교체한다(인자명 2개,
+단일 hunk). `--check`(종료코드로 알림) / `--restore`(`.orig` 백업 복원) 지원.
+`scripts/check_env.py`에도 같은 판정을 붙여 설치 점검에서 걸리게 했다.
+
+만드는 과정에서 **스크립트가 파일을 크게 훼손하는 실수**를 한 번 했다. `causal_mask = `
+문자열을 인덱스로 찾아 그 뒤 `hidden_states = inputs_embeds`까지를 교체 범위로 잡았는데,
+손수정 버전에는 그 패턴이 없어 앞쪽의 엉뚱한 `try:`가 잡히고 300줄이 지워졌다(문법은
+유효해서 `ast.parse`도 통과했다). hub 스냅샷에서 복구한 뒤, **알려진 블록 전체를 문자열
+그대로 매칭**해 치환하고 줄 수 변화가 12줄을 넘으면 거부하도록 바꿨다. 인덱스 탐색으로
+코드 범위를 자르지 말 것.
+
+Windows에서 `write_text`가 줄바꿈을 CRLF로 바꿔 파일 전체가 변경돼 보이는 문제도 함께
+고쳤다(바이트 단위로 읽고 원래 줄바꿈으로 되돌려 쓴다).
+
+### 12.4 재측정 결과
+
+테스트 200건, `word` 분절, batch 4 greedy. 마스크 수정 전/후.
+
+| 시스템 | 수정 전 R-1 | 수정 후 R-1 | 길이비 | 5-gram 반복 |
+|---|---:|---:|---:|---:|
+| base-0shot (어댑터와 같은 프롬프트) | 8.83 | **18.72** | 5.19 → 2.12 | 113 → 4 |
+| qlora 어댑터 | 39.35 | **39.09** | 1.22 → 1.22 | 13 → 14 |
+
+**어댑터는 이 버그에 거의 영향을 받지 않았다**(±1.4점 이내, 도메인별로도). 태스크에
+고정돼 있어 pad 노이즈를 견딘 것으로 보인다. 그래서 README의 기존 파인튜닝 수치는
+사실상 유효했고, 붕괴한 쪽은 베이스 모델뿐이었다.
+
+### 12.5 베이스라인을 두 개 낸 이유
+
+같은 프롬프트로 비교하면 베이스는 정답보다 **2.12배** 길게 쓴다(목록·머리말 포함).
+ROUGE F1은 길이 초과를 감점하므로, 그 상태의 격차에는 "형식을 모른다"가 섞인다.
+그래서 `configs/zeroshot_prompted.yaml`로 "2~3문장·150자 내외·요약문만"을 지시한
+베이스라인을 하나 더 만들었다. 길이비가 1.29(어댑터 1.22)까지 내려온다.
+
+| 데이터 | base-0shot | base-prompted | qlora | Δ vs 0shot | Δ vs prompted |
+|---|---:|---:|---:|---:|---:|
+| 전체 | 18.72 | 19.89 | 39.09 | +20.38 | +19.20 |
+| aihub_editorial | 11.49 | 14.06 | 24.89 | +13.40 | +10.83 |
+| aihub_law | 18.04 | 17.17 | 42.39 | +24.35 | +25.21 |
+| aihub_news | 19.32 | 21.51 | 35.46 | +16.14 | +13.95 |
+| naver_news | 25.65 | 26.31 | 53.48 | +27.83 | +27.17 |
+
+**길이를 맞춰도 격차는 유지된다**(+19.20, 네 도메인 모두 95% CI가 0 밖). 파인튜닝
+효과가 형식 아티팩트가 아니라는 뜻이다.
+
+비교는 `scripts/compare_runs.py`로 한다. `report_predictions.py`는 한 실행을 lead-N과
+비교하는 도구여서, 두 실행을 같은 문서끼리 짝지어 paired bootstrap하는 코드가 없었다.
+
+### 12.6 그래도 ROUGE로는 절반만 말할 수 있다
+
+베이스 모델 요약의 **신규 4-gram 비율은 97%**다. 원문 표현을 거의 쓰지 않고 새로 쓴다.
+정답 요약은 62.7%, 어댑터는 42.9%다. 즉 베이스는 "요약을 못 한다"기보다 **정답과 다른
+어휘로 요약한다**. +20점의 상당 부분은 정답 스타일(어휘·길이·문체) 정렬이고, 내용
+충실도까지 앞선다는 증거는 아니다. 이 구분은 사람 평가로만 확정된다(README §6-3).
+
+### 12.7 검증
+
+- 같은 12건 bs=1 / bs=4(수정 후) 비교 — 붕괴 사라짐, 반복 5-gram 최대 83회 → 1회.
+  bs=1과 bit 단위로 같지는 않다(배치 패딩의 부동소수점 차이가 greedy에서 갈린다).
+- `patch_remote_code.py` 멱등성: 두 번 돌려도 `fixed`, hub 원본과의 diff는 단일 hunk.
+- 테스트 119 passed / 1 failed. 실패한 `tests/test_api.py::test_default_paths_exist_in_repo`는
+  이 작업과 무관하다 — `DEFAULT_ADAPTER_PATH`(`outputs/exaone-3.5-7.8b-summary-qlora/adapter`)가
+  비어 있고 실제 어댑터가 `outputs/exaone-3.5-7.8b-summary-qlora_task2/`에 있어서다.
+  경로를 맞추거나 기본값을 바꿔야 한다(미해결).
+
+### 12.8 남은 것
+
+- 200건 → 1,977건 전체 재평가 (도메인당 n≈50이라 CI가 ±5~10점)
+- 사람 평가 — 베이스 요약과 어댑터 요약을 나란히 놓고 사실성·충실도 비교
+- `patch_remote_code.py`는 캐시를 지우면 다시 돌려야 한다. `setup.ps1`에 넣을지는
+  보류했다(모델을 한 번 로딩한 뒤에야 캐시가 생기므로 순서가 어긋난다)

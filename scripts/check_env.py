@@ -45,6 +45,40 @@ def _cuda_version_tuple(version: str | None) -> tuple[int, ...]:
         return (99, 99)
 
 
+def check_remote_code() -> int:
+    """캐시된 EXAONE remote code의 attention mask 생성부 상태를 본다.
+
+    원본 코드는 transformers 5.15에 없는 인자명으로 `create_causal_mask()`를 부른다.
+    이걸 방치하거나 try/except로 덮으면 **패딩 마스크가 버려져** 배치 생성(left padding)이
+    조용히 망가진다. 상세와 수정은 `scripts/patch_remote_code.py`.
+    """
+    try:
+        from patch_remote_code import classify, find_targets, modules_root, read_source
+    except ImportError as exc:  # pragma: no cover
+        print(f"{WARN} patch_remote_code 임포트 실패: {exc}")
+        return 1
+
+    targets = find_targets(modules_root())
+    if not targets:
+        print(f"{OK} EXAONE remote code 캐시 없음 (첫 로딩 시 내려받습니다)")
+        return 0
+
+    problems = 0
+    for path in targets:
+        state = classify(read_source(path)[0])
+        if state == "fixed":
+            print(f"{OK} EXAONE remote code   attention mask 패치 적용됨")
+        else:
+            problems += 1
+            reason = {
+                "upstream": "5.15에서 create_causal_mask 호출이 TypeError로 실패합니다",
+                "broken": "마스크를 버리고 있습니다(causal_mask=None) — 배치 생성이 망가집니다",
+            }.get(state, "상태를 알 수 없습니다")
+            print(f"{WARN} EXAONE remote code   {state}: {reason}")
+            print("       -> python scripts\\patch_remote_code.py")
+    return problems
+
+
 def main() -> int:
     problems = 0
     print(f"Python  : {sys.version.split()[0]}  ({platform.system()} {platform.release()})")
@@ -125,6 +159,8 @@ def main() -> int:
         print(f"{FAIL} bitsandbytes 4bit 커널 실행 실패: {type(exc).__name__}: {exc}")
         print("       -> QLoRA를 못 씁니다. bitsandbytes 업그레이드 또는 bf16 LoRA 설정을 쓰세요.")
         problems += 1
+
+    problems += check_remote_code()
 
     print("-" * 62)
     print("문제 없음." if problems == 0 else f"확인이 필요한 항목 {problems}건.")

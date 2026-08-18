@@ -40,7 +40,18 @@
       "Bash(PYTHONIOENCODING=utf-8 PYTHONPATH=\"C:/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/src\" /c/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/.venv/Scripts/python.exe /c/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/outputs/_smoke_api.py)",
       "Bash(PYTHONIOENCODING=utf-8 /c/Users/H11/projects/EXAONE-3.5-7.8B-Instruct/.venv/Scripts/python.exe -)",
       "Bash(.venv/Scripts/python.exe *)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(nvidia-smi *)",
+      "Bash(cp C:/Users/H11/.cache/huggingface/hub/models--LGAI-EXAONE--EXAONE-3.5-7.8B-Instruct/snapshots/553ea250b9a5317231459279d5847d6cf955b9aa/modeling_exaone.py C:/Users/H11/.cache/huggingface/modules/transformers_modules/LGAI_hyphen_EXAONE/EXAONE_hyphen_3_dot_5_hyphen_7_dot_8B_hyphen_Instruct/553ea250b9a5317231459279d5847d6cf955b9aa/modeling_exaone.py)",
+      "Bash(rm -f C:/Users/H11/.cache/huggingface/modules/transformers_modules/LGAI_hyphen_EXAONE/EXAONE_hyphen_3_dot_5_hyphen_7_dot_8B_hyphen_Instruct/553ea250b9a5317231459279d5847d6cf955b9aa/__pycache__/modeling_exaone*.pyc)",
+      "Bash(rm -f C:/Users/H11/.cache/huggingface/modules/transformers_modules/LGAI_hyphen_EXAONE/EXAONE_hyphen_3_dot_5_hyphen_7_dot_8B_hyphen_Instruct/553ea250b9a5317231459279d5847d6cf955b9aa/modeling_exaone.py.orig)",
+      "Bash(echo \"check exit=$?\")",
+      "Bash(rm -f C:/Users/H11/.cache/huggingface/modules/transformers_modules/LGAI_hyphen_EXAONE/EXAONE_hyphen_3_dot_5_hyphen_7_dot_8B_hyphen_Instruct/553ea250b9a5317231459279d5847d6cf955b9aa/modeling_exaone.py.orig C:/Users/H11/.cache/huggingface/modules/transformers_modules/LGAI_hyphen_EXAONE/EXAONE_hyphen_3_dot_5_hyphen_7_dot_8B_hyphen_Instruct/553ea250b9a5317231459279d5847d6cf955b9aa/__pycache__/modeling_exaone*.pyc)",
+      "Bash(PYTHONPATH=src PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest tests -q)",
+      "Bash(PYTHONPATH=src PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest tests/test_api.py::test_default_paths_exist_in_repo -q)",
+      "Bash(PYTHONPATH=src PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest tests)",
+      "Bash(grep -n \"scripts/\\\\|scripts\\\\\\\\\\\\\\\\\" README.md)",
+      "Bash(grep -n \"outputs/exaone-3.5-7.8b-summary-qlora\\\\`\" README.md)"
     ]
   }
 }

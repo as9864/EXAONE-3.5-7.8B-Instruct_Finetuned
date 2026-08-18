@@ -1,0 +1,56 @@
+# 파인튜닝 전 베이스 모델 zero-shot 베이스라인 (강한 쪽).
+#
+# configs/qlora_7.8b.yaml과 model·data·generation이 모두 같고, **프롬프트만** 다르다.
+# 어댑터는 학습 데이터에서 "한 단락, 150자 내외"라는 출력 형식을 배웠으므로, 같은
+# 프롬프트로 베이스 모델을 돌리면 베이스는 형식을 몰라 목록·머리말을 붙이고 정답보다
+# 2배 이상 길게 쓴다. 그 상태의 ROUGE 저하는 요약 능력이 아니라 형식 불일치다.
+#
+# 그래서 베이스라인을 두 개 낸다.
+#   1) configs/qlora_7.8b.yaml  - 어댑터와 완전히 같은 조건 (파인튜닝의 순효과)
+#   2) 이 파일                  - 형식을 프롬프트로 알려준 zero-shot (능력 상한선)
+#
+# 사용:
+#   python -m exaone_summarize.evaluate -c configs\zeroshot_prompted.yaml `
+#       --input-jsonl data\processed\test.jsonl --limit 200 --batch-size 4 `
+#       --save-predictions outputs\baseline-zeroshot-prompted\predictions.jsonl
+
+model:
+  model_name_or_path: LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct
+  trust_remote_code: true
+  attn_implementation: sdpa
+  torch_dtype: bfloat16
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+  gradient_checkpointing: true
+
+data:
+  train_file: data/processed/train.jsonl
+  eval_file: data/processed/validation.jsonl
+  document_key: document
+  summary_key: summary
+  max_seq_len: 1536
+  max_target_tokens: 256
+  max_train_samples: null
+  max_eval_samples: 100
+  num_proc: 1
+
+  # 여기만 qlora_7.8b.yaml과 다르다. 정답 요약의 평균 길이가 157자라서 150자를 준다.
+  system_prompt: >-
+    당신은 문서 요약 전문가입니다. 주어진 문서의 핵심 정보만 정확하게 담아
+    간결한 한국어로 요약하세요. 문서에 없는 내용은 절대 추가하지 마세요.
+  user_template: |-
+    다음 문서를 한 단락으로 요약해 주세요. 2~3문장, 150자 내외로 쓰고,
+    제목·머리말·목록·설명 없이 요약문만 출력하세요.
+
+    ---
+    {document}
+    ---
+
+generation:
+  max_new_tokens: 512
+  do_sample: false
+  temperature: 0.7
+  top_p: 0.95
+  repetition_penalty: 1.05
